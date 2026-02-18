@@ -10,7 +10,7 @@ ECR_URI     = $(ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com/$(IMAGE)
 .PHONY: build run stop logs clean
 
 build:
-	docker build -t $(IMAGE):$(TAG) .
+	docker build --platform linux/amd64 -t $(IMAGE):$(TAG) .
 
 run:
 	docker compose up -d

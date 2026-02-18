@@ -1,5 +1,5 @@
-# UT2004 is 32-bit. We run it on a 64-bit Ubuntu base with 32-bit libs.
-FROM ubuntu:22.04
+# UT2004 is 32-bit x86 — always build for amd64, even on Apple Silicon.
+FROM --platform=linux/amd64 ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV UT2004_DIR=/opt/ut2004
@@ -8,7 +8,7 @@ ENV UT2004_DIR=/opt/ut2004
 RUN dpkg --add-architecture i386 && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-      ca-certificates curl jq aria2 unshield \
+      ca-certificates curl jq aria2 unshield p7zip-full lbzip2 \
       libstdc++6:i386 libgcc-s1:i386 libc6:i386 \
       libx11-6:i386 libxext6:i386 libxrender1:i386 libxi6:i386 \
       libxrandr2:i386 libxinerama1:i386 libxcursor1:i386 \
@@ -21,7 +21,8 @@ RUN curl -fsSL -o /tmp/install-ut2004.sh \
     && chmod +x /tmp/install-ut2004.sh
 
 # Install UT2004 headlessly into /opt/ut2004
-RUN /tmp/install-ut2004.sh \
+# Pipe "yes" to auto-accept the Epic Games Terms of Service prompt
+RUN yes | /tmp/install-ut2004.sh \
       --ui-mode none \
       --destination "${UT2004_DIR}" \
       --application-entry skip \
