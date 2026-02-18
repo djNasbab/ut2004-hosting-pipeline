@@ -1,0 +1,21 @@
+services:
+  ut2004:
+    build: .
+    image: ut2004-server:latest
+    container_name: ut2004-server
+    restart: unless-stopped
+    ports:
+      - "7777:7777/udp"
+      - "7778:7778/udp"
+      - "7787:7787/udp"
+    environment:
+      MAP: DM-Rankin
+      GAME: XGame.xDeathMatch
+      PORT: "7777"
+      QUERYPORT: "7778"
+    volumes:
+      # Persist ini files so config survives rebuilds
+      - ut2004-system:/opt/ut2004/System
+
+volumes:
+  ut2004-system:

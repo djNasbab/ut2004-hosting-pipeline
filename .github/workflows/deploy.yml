@@ -1,0 +1,85 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '*.md'
+      - 'LICENSE'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-north-1' }}
+  ECR_REPO: ut2004-server
+  ECS_CLUSTER: ut2004
+  ECS_SERVICE: ut2004-server
+
+jobs:
+  deploy:
+    name: Build, push & deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Option A – OIDC (recommended): set vars.AWS_ROLE_ARN
+          # Option B – Access keys: set secrets.AWS_ACCESS_KEY_ID & AWS_SECRET_ACCESS_KEY
+          role-to-assume: ${{ vars.AWS_ROLE_ARN || '' }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID || '' }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY || '' }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG \
+                        -t $ECR_REGISTRY/$ECR_REPO:latest .
+          docker push $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPO:latest
+
+      - name: Deploy to ECS
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --force-new-deployment \
+            --query 'service.serviceName' \
+            --output text
+
+      - name: Print server IP
+        run: |
+          echo "Waiting for new task to start..."
+          aws ecs wait services-stable --cluster $ECS_CLUSTER --services $ECS_SERVICE || true
+
+          TASK_ARN=$(aws ecs list-tasks --cluster $ECS_CLUSTER --service $ECS_SERVICE \
+            --query 'taskArns[0]' --output text)
+
+          if [ "$TASK_ARN" = "None" ]; then
+            echo "::warning::No running tasks found yet — check the ECS console."
+            exit 0
+          fi
+
+          ENI=$(aws ecs describe-tasks --cluster $ECS_CLUSTER --tasks "$TASK_ARN" \
+            --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
+            --output text)
+
+          PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids "$ENI" \
+            --query 'NetworkInterfaces[0].Association.PublicIp' --output text)
+
+          echo "## Server is live" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Connect to **$PUBLIC_IP:7777**" >> "$GITHUB_STEP_SUMMARY"

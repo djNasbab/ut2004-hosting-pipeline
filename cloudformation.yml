@@ -1,0 +1,265 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  UT2004 Dedicated Server on AWS Fargate.
+  Deploys a self-contained VPC, ECR repo, ECS cluster, and Fargate service.
+  Default sizing (0.25 vCPU / 0.5 GB) fits within the Fargate free tier.
+
+# ---------------------------------------------------------------------------
+Parameters:
+# ---------------------------------------------------------------------------
+  Map:
+    Type: String
+    Default: DM-Rankin
+    Description: Starting map name
+
+  Game:
+    Type: String
+    Default: XGame.xDeathMatch
+    Description: Game type class
+
+  Cpu:
+    Type: String
+    Default: '256'
+    AllowedValues: ['256', '512', '1024']
+    Description: Task CPU units (256 = 0.25 vCPU — free tier)
+
+  Memory:
+    Type: String
+    Default: '512'
+    AllowedValues: ['512', '1024', '2048']
+    Description: Task memory in MB (512 MB — free tier)
+
+  DesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 0
+    MaxValue: 1
+    Description: Number of server tasks (0 to pause, 1 to run)
+
+# ---------------------------------------------------------------------------
+Resources:
+# ---------------------------------------------------------------------------
+
+  # ── Networking ────────────────────────────────────────────────
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: ut2004-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: ut2004-igw
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: ut2004-public-a
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: ut2004-public-b
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: ut2004-public-rt
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetARouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  SubnetBRouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  # ── Security ──────────────────────────────────────────────────
+
+  ServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow UT2004 game and query UDP traffic
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: udp
+          FromPort: 7777
+          ToPort: 7778
+          CidrIp: 0.0.0.0/0
+          Description: Game traffic
+        - IpProtocol: udp
+          FromPort: 7787
+          ToPort: 7787
+          CidrIp: 0.0.0.0/0
+          Description: Server query / browser list
+      Tags:
+        - Key: Name
+          Value: ut2004-sg
+
+  # ── ECR ───────────────────────────────────────────────────────
+
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: ut2004-server
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep only the last 3 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 3
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+
+  # ── IAM ───────────────────────────────────────────────────────
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ut2004-task-execution
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  # ── ECS ───────────────────────────────────────────────────────
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: ut2004
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/ut2004-server
+      RetentionInDays: 7
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: ut2004-server
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: ut2004
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/ut2004-server:latest'
+          Essential: true
+          PortMappings:
+            - ContainerPort: 7777
+              Protocol: udp
+            - ContainerPort: 7778
+              Protocol: udp
+            - ContainerPort: 7787
+              Protocol: udp
+          Environment:
+            - Name: MAP
+              Value: !Ref Map
+            - Name: GAME
+              Value: !Ref Game
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ut2004
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: ut2004-server
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref ServerSecurityGroup
+          Subnets:
+            - !Ref PublicSubnetA
+            - !Ref PublicSubnetB
+
+# ---------------------------------------------------------------------------
+Outputs:
+# ---------------------------------------------------------------------------
+  ECRRepositoryUri:
+    Description: Push your Docker image here
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/ut2004-server'
+
+  ClusterName:
+    Description: ECS cluster name
+    Value: !Ref ECSCluster
+
+  ServiceName:
+    Description: ECS service name
+    Value: !GetAtt Service.Name
+
+  GetServerIP:
+    Description: CLI command to find the running task's public IP
+    Value: !Sub >-
+      aws ecs list-tasks --cluster ut2004 --service ut2004-server --query 'taskArns[0]' --output text |
+      xargs -I{} aws ecs describe-tasks --cluster ut2004 --tasks {} --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' --output text |
+      xargs -I{} aws ec2 describe-network-interfaces --network-interface-ids {} --query 'NetworkInterfaces[0].Association.PublicIp' --output text

@@ -1,0 +1,84 @@
+name: Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Deploy or tear down the stack
+        required: true
+        type: choice
+        default: deploy
+        options:
+          - deploy
+          - teardown
+      map:
+        description: Starting map
+        required: false
+        default: DM-Rankin
+      game:
+        description: Game type class
+        required: false
+        default: XGame.xDeathMatch
+      desired_count:
+        description: Number of tasks (0 to pause, 1 to run)
+        required: false
+        default: '1'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-north-1' }}
+  STACK_NAME: ut2004-server
+
+jobs:
+  infra:
+    name: CloudFormation ${{ inputs.action }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN || '' }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID || '' }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY || '' }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy stack
+        if: inputs.action == 'deploy'
+        run: |
+          aws cloudformation deploy \
+            --template-file cloudformation.yml \
+            --stack-name $STACK_NAME \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides \
+              Map=${{ inputs.map }} \
+              Game=${{ inputs.game }} \
+              DesiredCount=${{ inputs.desired_count }} \
+            --no-fail-on-empty-changeset
+
+          echo "## Stack outputs" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          aws cloudformation describe-stacks --stack-name $STACK_NAME \
+            --query 'Stacks[0].Outputs[*].[OutputKey,OutputValue]' --output table \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Teardown stack
+        if: inputs.action == 'teardown'
+        run: |
+          # Empty ECR repo first (CloudFormation can't delete a non-empty repo)
+          REPO=ut2004-server
+          IMAGES=$(aws ecr list-images --repository-name $REPO --query 'imageIds[*]' --output json 2>/dev/null || echo '[]')
+          if [ "$IMAGES" != "[]" ]; then
+            aws ecr batch-delete-image --repository-name $REPO --image-ids "$IMAGES"
+          fi
+
+          aws cloudformation delete-stack --stack-name $STACK_NAME
+          echo "Waiting for stack deletion..."
+          aws cloudformation wait stack-delete-complete --stack-name $STACK_NAME
+          echo "Stack deleted." >> "$GITHUB_STEP_SUMMARY"
