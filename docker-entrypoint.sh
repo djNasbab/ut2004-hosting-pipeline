@@ -15,4 +15,4 @@ if [[ $# -gt 0 ]]; then
 fi
 
 # Start dedicated server
-exec ./ucc-bin server "${MAP}?game=${GAME}?Port=${PORT}?QueryPort=${QUERYPORT}" ini=UT2004.ini -nohomedir
+exec ./UCC server "${MAP}?game=${GAME}?Port=${PORT}?QueryPort=${QUERYPORT}" ini=UT2004.ini -nohomedir

@@ -2,6 +2,7 @@ services:
   ut2004:
     build: .
     image: ut2004-server:latest
+    platform: linux/amd64
     container_name: ut2004-server
     restart: unless-stopped
     ports:
